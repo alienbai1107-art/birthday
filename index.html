@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>先生への誕生日プレゼント</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
+  canvas { display: block; cursor: pointer; }
+  #hint {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    color: #999; font-family: sans-serif; font-size: 14px; pointer-events: none;
+    animation: fadeHint 2s ease-in-out infinite;
+    z-index: 10;
+  }
+  @keyframes fadeHint { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hint">画面をタップ ▸</div>
+<audio id="ambient" loop preload="auto" src="ambient.mp3"></audio>
+<script>
+// ── Canvas setup ──
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  W = canvas.width  = Math.min(window.innerWidth, 960);
+  H = canvas.height = Math.min(window.innerHeight, 640);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.style.position = 'absolute';
+  canvas.style.left = ((window.innerWidth - W) / 2) + 'px';
+  canvas.style.top  = ((window.innerHeight - H) / 2) + 'px';
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── Sprite loading ──
+const images = {};
+const sprites = {};
+const spriteFiles = {
+  teacher: ['laoshi_frame0.png?v=2','laoshi_frame1.png?v=2','laoshi_frame2.png?v=2','laoshi_frame3.png?v=2','laoshi_frame4.png?v=2'],
+  npc_zhu: ['zhu_frame0.png?v=2','zhu_frame1.png?v=2','zhu_frame2.png?v=2','zhu_frame3.png?v=2','zhu_frame4.png?v=2'],
+  npc_zhou: ['zhou_frame0.png?v=2','zhou_frame1.png?v=2','zhou_frame2.png?v=2','zhou_frame3.png?v=2','zhou_frame4.png?v=2'],
+  npc_bai: ['bai_frame0.png','bai_frame1.png','bai_frame2.png','bai_frame3.png','bai_frame4.png'],
+  npc_zhang: ['zhang_frame0.png','zhang_frame1.png','zhang_frame2.png','zhang_frame3.png','zhang_frame4.png'],
+  npc_tong: ['tong_frame0.png','tong_frame1.png','tong_frame2.png','tong_frame3.png','tong_frame4.png'],
+};
+
+// Background image
+images.bg = new Image();
+images.bg.src = 'backgroud.png';
+images.gate = new Image();
+images.gate.src = 'gate.png';
+images.cake = new Image();
+images.cake.src = 'cake.png';
+
+// Final scene character images
+images.lastZhu = new Image(); images.lastZhu.src = 'zhu_last.png';
+images.lastZhou = new Image(); images.lastZhou.src = 'zhou_last.png';
+images.lastBai = new Image(); images.lastBai.src = 'bai_last.png';
+images.lastZhang = new Image(); images.lastZhang.src = 'zhang_last.png';
+images.lastTong = new Image(); images.lastTong.src = 'tong_last.png';
+
+let spritesReady = false;
+let pendingSprites = 0;
+
+for (const [key, files] of Object.entries(spriteFiles)) {
+  sprites[key] = [];
+  files.forEach((f, i) => {
+    pendingSprites++;
+    const img = new Image();
+    img.onload = () => { pendingSprites--; };
+    img.src = f;
+    sprites[key][i] = img;
+  });
+}
+
+// ── Audio context ──
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+
+function playNote(freq, startTime, dur, vol = 0.25, type = 'triangle') {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(vol, startTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, startTime + dur);
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.start(startTime); osc.stop(startTime + dur);
+}
+
+// ── Ambient sound ──
+function startAmbient() {
+  const el = document.getElementById('ambient');
+  if (!el) return;
+  el.volume = 0.6;
+  el.play().catch(e => {});
+}
+function stopAmbient() {
+  const el = document.getElementById('ambient');
+  if (el) { el.pause(); el.currentTime = 0; }
+}
+
+// ── BGM system ──
+let bgmTimer = null;
+let bgmGain = null;
+function startBGM() {
+  if (!audioCtx || bgmTimer) return;
+  bgmGain = audioCtx.createGain();
+  bgmGain.gain.value = 0.30;
+  bgmGain.connect(audioCtx.destination);
+  startAmbient();
+
+  // Simple gentle melody loop
+  const melody = [
+    262, 294, 330, 349, 392, 349, 330, 294,
+    330, 392, 440, 392, 349, 330, 294, 262,
+  ];
+  const noteLen = 0.8;
+  let noteIdx = 0;
+  let startTime = audioCtx.currentTime;
+
+  function scheduleNotes() {
+    if (!audioCtx || !bgmGain) return;
+    const now = audioCtx.currentTime;
+    while (startTime < now + 3) {
+      const freq = melody[noteIdx % melody.length];
+      playNoteGain(freq, startTime, noteLen * 0.8, 0.30);
+      startTime += noteLen;
+      noteIdx++;
+    }
+    bgmTimer = setTimeout(scheduleNotes, 2000);
+  }
+  scheduleNotes();
+}
+
+function playNoteGain(freq, startTime, dur, vol) {
+  if (!audioCtx || !bgmGain) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(vol, startTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, startTime + dur);
+  osc.connect(gain); gain.connect(bgmGain);
+  osc.start(startTime); osc.stop(startTime + dur);
+}
+
+function stopBGM() {
+  if (bgmTimer) { clearTimeout(bgmTimer); bgmTimer = null; }
+  if (bgmGain) { bgmGain.disconnect(); bgmGain = null; }
+  stopAmbient();
+}
+
+// ── Footstep SFX ──
+let lastFootstepTime = 0;
+function playFootstep() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  if (now - lastFootstepTime < 0.35) return;
+  lastFootstepTime = now;
+  // Short noise burst for footstep
+  const bufferSize = audioCtx.sampleRate * 0.06;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.3));
+  }
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(0.50, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 800;
+  source.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+  source.start(now); source.stop(now + 0.06);
+}
+
+function playHappyBirthday() {
+  if (!audioCtx) return;
+  stopBGM();
+  const now = audioCtx.currentTime;
+  // Melody — brighter square wave
+  const melody = [
+    [392,0],[392,0.45],[440,0.9],[392,1.35],[523,1.8],[494,2.25],
+    [392,2.7],[392,3.15],[440,3.6],[392,4.05],[587,4.5],[523,4.95],
+    [392,5.4],[392,5.85],[784,6.3],[659,6.75],[523,7.2],[494,7.65],[440,8.1],
+    [698,9.0],[698,9.45],[659,9.9],[523,10.35],[587,10.8],[523,11.25],
+  ];
+  melody.forEach(([freq, offset]) => playNote(freq, now + offset, 0.4, 0.2, 'square'));
+  // Bass harmony
+  const bass = [
+    [196,0],[196,0.9],[196,1.8],[196,2.7],
+    [196,3.6],[196,4.5],[196,5.4],[262,6.3],[220,7.2],
+    [175,9.0],[175,9.9],[262,10.35],[262,10.8],[196,11.25],
+  ];
+  bass.forEach(([freq, offset]) => playNote(freq, now + offset, 0.7, 0.1, 'triangle'));
+}
+
+// ── Game state ──
+const WORLD_W = 5200;
+const GROUND_Y_RATIO = 0.75; // ground line at 75% of height
+
+const state = {
+  phase: 'intro',       // intro | walking | dialogue | celebration | end
+  playerX: 80,
+  playerTargetX: 80,
+  walkSpeed: 220,       // px per second
+  walkTime: 0,
+  currentNPC: -1,
+  dialogueCharIndex: 0,
+  dialogueTimer: 0,
+  celebTime: 0,
+  fadeOutNPC: -1,
+  fadeOutStart: 0,
+  particles: [],
+  shakeTimer: 0,
+  shakeIntensity: 0,
+};
+
+// ── NPC definitions ──
+const npcs = [
+  { name: '朱',   x: 1450,  color: '#888', spriteKey: 'npc_zhu',
+    frames: { idle: 0, greet: 3, chat: [1,2,4] }, spriteScale: 1.35, flip: true, yOff: 100,
+    dialogue: 'せ、せんせい…おたんじょうび、おめでとうございます。にほんご、まだうまくはなせなくて…でも、きょうはどうしても、じぶんのくちでおいわいをいいたくて。そつぎょうしてからも、せんせいのごおん、わすれたことありません。' },
+  { name: '周',   x: 2050, color: '#777', spriteKey: 'npc_zhou',
+    frames: { idle: 4, greet: 3, chat: [0,1,2,3] }, spriteScale: 2.0, yOff: 100, flip: true,
+    dialogue: 'シェンシェイ〜！お誕生日おめでとうございまス〜！卒業してだいぶ経ちまシたが、先生との思い出は今でも宝物デスよ。先生のゼミ、本当に楽しかった〜。あ、発音が変で笑わないでくださいね〜！ウフフ…' },
+  { name: '白',   x: 2650, color: '#666', spriteKey: 'npc_bai',
+    frames: { idle: 2, chat: [0,1,4] }, spriteScale: 1.5, portraitScale: 1.3, yOff: 110, flip: true,
+    dialogue: '先生、お誕生日おめでとうございます！今日は特別な日なので、みんなで集まりました。みんなもう卒業してそれぞれの道を歩いてますけど、先生の誕生日を忘れるわけがないですよね。私はというと…まだもう少しいろいろお世話になりそうです、えへへ。先生と過ごした時間は本当にかけがえのないものでした。これからもどうぞよろしくお願いします！' },
+  { name: '張',   x: 3250, color: '#888', spriteKey: 'npc_zhang',
+    frames: { idle: 3, chat: [0,1,2,4] }, spriteScale: 1.5, yOff: 110, flip: true,
+    dialogue: '…先生。お誕生日おめでとうございます。もう卒業して就職しましたが、先生の研究室で学んだことが今の自分を支えています。…短いですが、本当に感謝しています。' },
+  { name: '童',   x: 3850, color: '#777', spriteKey: 'npc_tong',
+    frames: { idle: 3, chat: [0,2,3,4] }, spriteScale: 1.8, yOff: 110, flip: true,
+    dialogue: '…先生、お誕生日おめでとうございます。卒業しても先生にどうしてもお祝いを伝えたくて。先生はいつも私たち一人ひとりに真剣に向き合ってくれて…私は口下手ですけど、感謝の気持ちは誰にも負けません。本当にありがとうございました。' },
+];
+
+const CELEB_X = 4700;
+
+// ── Particle system ──
+function spawnParticles(x, y, count) {
+  const colors = ['#FF6B6B','#FFD93D','#6BCB77','#4D96FF','#FF8C42','#FF69B4','#00D2FF','#FFB830','#FF5E5E','#FFE066','#48C774','#7CB8FF'];
+  for (let i = 0; i < count; i++) {
+    const shape = Math.random();
+    state.particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 500,
+      vy: -Math.random() * 400 - 120,
+      life: 2.5 + Math.random() * 4,
+      age: 0,
+      w: shape < 0.25 ? 4 + Math.random() * 6  : 6 + Math.random() * 14,
+      h: shape < 0.25 ? 10 + Math.random() * 20 : 3 + Math.random() * 10,
+      rotation: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 8,
+      wobble: Math.random() * 3,
+      color: colors[Math.floor(Math.random() * colors.length)],
+    });
+  }
+}
+
+// ── Drawing helpers ──
+function getGroundY() { return H * GROUND_Y_RATIO; }
+function worldToScreen(wx) { return wx - state.playerX + W * 0.35; }
+
+function drawRoundedRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawPlayer(cx, cy, mode) {
+  if (!sprites.teacher || sprites.teacher.length < 5) return;
+  const frames = sprites.teacher;
+  let fi;
+  if (mode === 'walk') {
+    // frames 0,1,2,1,0 ping-pong for natural walk cycle
+    const speed = 5; // frames per second
+    const t = performance.now() / 1000 * speed;
+    const cycle = Math.floor(t) % 4; // 0,1,2,3
+    fi = cycle < 3 ? cycle : 1;      // 0,1,2,1
+  } else if (mode === 'chat') {
+    fi = 4; // frame 4: chat pose
+  } else {
+    fi = 3; // frame 3: idle pose
+  }
+  const img = frames[fi];
+  if (!img || !img.complete) return;
+
+  const spriteH = 216;
+  const scale = spriteH / img.naturalHeight;
+  const spriteW = img.naturalWidth * scale;
+
+  const sx = cx - spriteW / 2;
+  const sy = cy - spriteH + 10;
+
+  ctx.drawImage(img, sx, sy, spriteW, spriteH);
+}
+
+function drawNPCCharacter(cx, cy, npc, animTime, talking, dialogueTime) {
+  // If has sprite, draw sprite instead of placeholder
+  if (npc.spriteKey && sprites[npc.spriteKey] && sprites[npc.spriteKey].length >= 5) {
+    const frames = sprites[npc.spriteKey];
+    let fi;
+    if (talking) {
+      if (npc.frames && npc.frames.chat && npc.frames.greet != null) {
+        // Greeting frame for first 1.2s, then ping-pong chat loop
+        if (dialogueTime < 1.2) {
+          fi = npc.frames.greet;
+        } else {
+          const chat = npc.frames.chat;
+          const speed = 4;
+          const t = Math.floor((dialogueTime - 1.2) * speed);
+          const cycle = chat.length * 2 - 2;
+          const pos = t % cycle;
+          fi = chat[pos < chat.length ? pos : cycle - pos];
+        }
+      } else if (npc.frames && npc.frames.chat) {
+        const chat = npc.frames.chat;
+        const speed = 4;
+        const t = Math.floor(performance.now() / 1000 * speed);
+        const cycle = chat.length * 2 - 2;
+        const pos = t % cycle;
+        fi = chat[pos < chat.length ? pos : cycle - pos];
+      } else {
+        fi = 4;
+      }
+    } else {
+      fi = (npc.frames && npc.frames.idle != null) ? npc.frames.idle : 3;
+    }
+    const img = frames[fi];
+    if (!img || !img.complete) return;
+
+    const spriteH = 160 * (npc.spriteScale || 1);
+    const scale = spriteH / img.naturalHeight;
+    const spriteW = img.naturalWidth * scale;
+    const yOff = npc.yOff || 0;
+    let sx = cx - spriteW / 2;
+    const sy = cy - spriteH + 10 + yOff;
+
+    if (npc.flip) {
+      ctx.save();
+      ctx.translate(cx, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(img, -spriteW / 2, sy, spriteW, spriteH);
+      ctx.restore();
+    } else {
+      ctx.drawImage(img, sx, sy, spriteW, spriteH);
+    }
+    return;
+  }
+
+  // Fallback placeholder
+  const idleBob = Math.sin(animTime * 2) * 2;
+  ctx.save();
+  ctx.translate(cx, cy + idleBob);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.12)';
+  ctx.beginPath();
+  ctx.ellipse(0, 60, 17, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = npc.color;
+  ctx.lineWidth = 2.8;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-5, 40); ctx.lineTo(-7, 56);
+  ctx.moveTo( 5, 40); ctx.lineTo( 7, 56);
+  ctx.stroke();
+
+  ctx.fillStyle = '#333';
+  ctx.fillRect(-11, 55, 8, 4);
+  ctx.fillRect( 3, 55, 8, 4);
+
+  ctx.fillStyle = npc.color;
+  drawRoundedRect(-9, 15, 18, 27, 4);
+  ctx.fill();
+
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.moveTo(-4, 16); ctx.lineTo(0, 22); ctx.lineTo(4, 16);
+  ctx.fill();
+
+  ctx.strokeStyle = npc.color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(-9, 22); ctx.lineTo(-15, 35);
+  ctx.moveTo( 9, 22); ctx.lineTo( 15, 35);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ddd';
+  ctx.beginPath();
+  ctx.arc(0, 6, 13, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#444';
+  ctx.beginPath();
+  ctx.arc(0, 3, 14, Math.PI, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#111';
+  ctx.beginPath();
+  ctx.arc(-3.5, 4, 1.6, 0, Math.PI * 2); ctx.fill();
+  ctx.arc( 3.5, 4, 1.6, 0, Math.PI * 2); ctx.fill();
+
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(0, 8, 3.5, 0.15, Math.PI - 0.15);
+  ctx.stroke();
+
+  ctx.fillStyle = '#555';
+  ctx.font = `${11}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText(npc.name, 0, -20);
+
+  ctx.restore();
+}
+
+// ── Background drawing ──
+function drawBackground() {
+  const bg = images.bg;
+  if (!bg || !bg.complete) return;
+
+  const gy = getGroundY();
+  const camX = state.playerX - W * 0.35;
+
+  // Sky and ground base colors
+  ctx.fillStyle = '#81CCF7';
+  ctx.fillRect(0, 0, W, gy);
+  ctx.fillStyle = '#69B04B';
+  ctx.fillRect(0, gy, W, H - gy);
+
+  // Scale background to 180%
+  const bgScale = H / bg.naturalHeight * 1.80;
+  const bgW = bg.naturalWidth * bgScale;
+  const bgH = H * 1.5;
+
+  // Parallax: background scrolls slower than the player
+  const parallax = 0.4;
+  const bgX = -(camX * parallax) % bgW;
+
+  // Draw tiled background, centered vertically
+  const bgY = (H - bgH) / 2;
+  for (let x = bgX - bgW; x < W + bgW; x += bgW) {
+    ctx.drawImage(bg, x, bgY, bgW, bgH);
+  }
+
+}
+
+// ── Dialogue drawing ──
+function drawDialogueBox(npc) {
+  const barH = 140;
+  const barY = H - barH;
+  const pscale = npc.portraitScale || npc.spriteScale || 1;
+  const portraitW = 160;
+  const portraitFullH = 240 * pscale;
+
+  // Backdrop
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, 0, W, H);
+
+  // ── NPC portrait (behind bar, lower body covered by bar) ──
+  const px = 50;
+  const py = barY - portraitFullH + 30 + 50 * pscale;
+  if (npc.spriteKey && sprites[npc.spriteKey] && sprites[npc.spriteKey].length >= 5) {
+    const frames = sprites[npc.spriteKey];
+    let fi;
+    if (npc.frames && npc.frames.chat) {
+      const chat = npc.frames.chat;
+      const speed = 4;
+      const t = Math.floor(performance.now() / 1000 * speed);
+      const cycle = chat.length * 2 - 2;
+      const pos = t % cycle;
+      fi = chat[pos < chat.length ? pos : cycle - pos];
+    } else {
+      fi = 4;
+    }
+    const img = frames[fi];
+    if (img && img.complete) {
+      const pscale = portraitFullH / img.naturalHeight;
+      const sw = img.naturalWidth * pscale;
+      const sh = portraitFullH;
+      if (npc.flipPortrait) {
+        ctx.save();
+        ctx.translate(px + sw / 2, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, -sw / 2, py, sw, sh);
+        ctx.restore();
+      } else {
+        ctx.drawImage(img, px, py, sw, sh);
+      }
+    }
+  }
+
+  // ── Name tag (above the bar) ──
+  const nameX = px + portraitW + 16;
+  const nameY = barY - 10;
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 15px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(npc.name, nameX, nameY);
+
+  // ── Dialogue bar ──
+  ctx.fillStyle = 'rgba(30,30,30,0.92)';
+  ctx.fillRect(0, barY, W, barH);
+  ctx.fillStyle = '#666';
+  ctx.fillRect(0, barY, W, 2);
+
+  // ── Dialogue text (with word wrapping) ──
+  const textX = nameX;
+  const textY = barY + 28;
+  const maxTextW = W - textX - 30;
+  ctx.font = '14px sans-serif';
+
+  // Wrap text into lines
+  const rawText = npc.dialogue;
+  const wrappedLines = [];
+  rawText.split('\n').forEach(para => {
+    if (!para.trim()) { wrappedLines.push(''); return; }
+    let line = '';
+    for (const char of para) {
+      const testLine = line + char;
+      if (ctx.measureText(testLine).width > maxTextW && line.length > 0) {
+        wrappedLines.push(line);
+        line = char;
+      } else {
+        line = testLine;
+      }
+    }
+    if (line) wrappedLines.push(line);
+  });
+
+  ctx.fillStyle = '#ddd';
+  wrappedLines.forEach((line, i) => {
+    ctx.fillText(line, textX, textY + i * 19);
+  });
+
+  // Click hint
+  ctx.fillStyle = '#888';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText('タップ ▸', W - 20, barY + barH - 10);
+}
+
+function fireCannon(side) {
+  const cx = side === 'left' ? W * 0.08 : W * 0.92;
+  const cy = H - 30;
+  const spread = side === 'left' ? 0.3 : -0.3; // aim toward center
+  const colors = ['#FF6B6B','#FFD93D','#6BCB77','#4D96FF','#FF8C42','#FF69B4','#00D2FF','#FFB830','#FF5E5E','#FFE066','#48C774','#7CB8FF'];
+  for (let i = 0; i < 40; i++) {
+    const angle = -Math.PI / 2 + spread + (Math.random() - 0.5) * 1.2;
+    const speed = 300 + Math.random() * 500;
+    state.particles.push({
+      x: cx + (Math.random() - 0.5) * 40,
+      y: cy,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 2 + Math.random() * 3.5,
+      age: 0,
+      w: 5 + Math.random() * 12,
+      h: 3 + Math.random() * 18,
+      rotation: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 10,
+      wobble: Math.random() * 4,
+      color: colors[Math.floor(Math.random() * colors.length)],
+    });
+  }
+}
+
+function drawStarBanner(alpha) {
+  const bannerY = 5;
+  const textY = bannerY + 36;
+
+  // Thick ribbon background
+  ctx.fillStyle = `rgba(200,50,50,${alpha * 0.7})`;
+  ctx.fillRect(0, bannerY, W, 50);
+  ctx.fillStyle = `rgba(180,30,30,${alpha * 0.5})`;
+  ctx.fillRect(0, bannerY + 22, W, 6);
+  ctx.fillStyle = `rgba(220,80,80,${alpha * 0.4})`;
+  ctx.fillRect(0, bannerY, W, 3);
+
+  // Large glowing text
+  ctx.fillStyle = `rgba(255,255,200,${alpha * 0.2})`;
+  ctx.font = 'bold 34px serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('★ HAPPY BIRTHDAY ★', W / 2 + 2, textY + 2);
+  ctx.fillStyle = `rgba(255,240,180,${alpha * 0.95})`;
+  ctx.fillText('★ HAPPY BIRTHDAY ★', W / 2, textY);
+
+  // String below ribbon
+  ctx.strokeStyle = `rgba(255,215,0,${alpha * 0.5})`;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 6]);
+  ctx.beginPath();
+  ctx.moveTo(15, bannerY + 50); ctx.lineTo(W - 15, bannerY + 50);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Dangling stars
+  const starCount = 16;
+  const spacing = (W - 30) / (starCount - 1);
+  for (let i = 0; i < starCount; i++) {
+    const sx = 15 + spacing * i;
+    const stringLen = 14 + (i % 4) * 14;
+    const swing = Math.sin(state.celebTime * 2.5 + i * 1.3) * (3 + i % 3 * 2.5);
+    const ex = sx + swing;
+    const ey = bannerY + 50 + stringLen;
+
+    ctx.strokeStyle = `rgba(255,215,0,${alpha * 0.45})`;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(sx, bannerY + 50);
+    ctx.quadraticCurveTo(sx + swing * 0.5, bannerY + 50 + stringLen * 0.5, ex, ey);
+    ctx.stroke();
+
+    const starAlpha = alpha * (0.65 + 0.35 * Math.sin(state.celebTime * 3.5 + i));
+    const starSize = 5 + (i % 4) * 3;
+    const starColors = ['#FFD700','#FFEC8B','#FFF8DC','#FFA500','#FFD700'];
+    ctx.fillStyle = starColors[i % starColors.length];
+    ctx.globalAlpha = starAlpha;
+    drawStar(ex, ey, starSize * 0.35, starSize, 5);
+    ctx.globalAlpha = 1;
+
+    if (Math.sin(state.celebTime * 6 + i * 2) > 0.25) {
+      ctx.fillStyle = `rgba(255,255,255,${starAlpha})`;
+      ctx.beginPath();
+      ctx.arc(ex + starSize * 0.5, ey - starSize * 0.4, 2, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+}
+
+function drawStar(cx, cy, innerR, outerR, points) {
+  ctx.beginPath();
+  for (let i = 0; i < points * 2; i++) {
+    const r = i % 2 === 0 ? outerR : innerR;
+    const angle = (i * Math.PI) / points - Math.PI / 2;
+    const x = cx + Math.cos(angle) * r;
+    const y = cy + Math.sin(angle) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function bounceEase(t) {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  const c4 = 1.70158 * 1.5;
+  return 1 + c4 * Math.pow(t - 1, 3) + 1.2 * Math.pow(t - 1, 2);
+}
+
+function drawCelebration(alpha) {
+  // Subtle darken
+  ctx.fillStyle = `rgba(0,0,0,${alpha * 0.35})`;
+  ctx.fillRect(0, 0, W, H);
+
+  // Star banner
+  drawStarBanner(alpha);
+
+  const gy = getGroundY();
+  const stageDelay = 0.55;
+
+  const allChars = [
+    { img: sprites.teacher && sprites.teacher.length >= 5 ? sprites.teacher[3] : null, h: 250, x: 0.10, flip: false },
+    { img: images.lastZhu,   h: 180, x: 0.52, flip: true },
+    { img: images.lastZhou,  h: 270, x: 0.63, flip: true },
+    { img: images.lastBai,   h: 180, x: 0.74, flip: true },
+    { img: images.lastZhang, h: 200, x: 0.84, flip: true },
+    { img: images.lastTong,  h: 240, x: 0.93, flip: true },
+  ];
+
+  allChars.forEach((def, i) => {
+    if (!def.img || !def.img.complete) return;
+    const appearTime = i * stageDelay;
+    const elapsed = state.celebTime - appearTime;
+    const t = Math.max(0, Math.min(1, elapsed / 1.2));
+    const bounce = bounceEase(t);
+
+    const ch = def.h;
+    const sc = ch / def.img.naturalHeight;
+    const cw = def.img.naturalWidth * sc;
+    const cx = W * def.x - cw / 2;
+    const baseY = gy - ch + 40;
+    const cy = baseY + (1 - bounce) * 120;
+    const charAlpha = alpha * Math.min(1, bounce * 2);
+    const popScale = 0.5 + bounce * 0.5;
+
+    ctx.globalAlpha = charAlpha;
+    ctx.save();
+    const centerX = cx + cw / 2;
+    ctx.translate(centerX, cy + ch / 2);
+    ctx.scale(popScale, popScale);
+    if (def.flip) ctx.scale(-1, 1);
+    ctx.drawImage(def.img, -cw / 2, -ch / 2, cw, ch);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  });
+
+  // Cake in the gap between teacher and NPCs
+  if (images.cake && images.cake.complete) {
+    const cakeScale = 0.4 + alpha * 0.15;
+    const cakeW = images.cake.naturalWidth * cakeScale;
+    const cakeH = images.cake.naturalHeight * cakeScale;
+    const cakeX = W * 0.32 - cakeW / 2;
+    const cakeY = gy - cakeH + 10 + (1 - alpha) * 60;
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(images.cake, cakeX, cakeY, cakeW, cakeH);
+    ctx.globalAlpha = 1;
+  }
+
+  // Text
+  if (alpha > 0.5) {
+    const textAlpha = (alpha - 0.5) / 0.5;
+    ctx.fillStyle = `rgba(255,255,255,${textAlpha})`;
+    ctx.font = 'bold 22px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('先生、お誕生日おめでとうございます！', W / 2, H - 70);
+    ctx.fillStyle = `rgba(255,255,255,${textAlpha * 0.7})`;
+    ctx.font = '15px serif';
+    ctx.fillText('素敵な一日をお過ごしください', W / 2, H - 42);
+  }
+
+  // Particles
+  state.particles.forEach(p => {
+    const pAlpha = Math.min(p.life - p.age, 1) * 0.9;
+    let r, g, b;
+    if (p.color.startsWith('#')) {
+      r = parseInt(p.color.slice(1,3), 16);
+      g = parseInt(p.color.slice(3,5), 16);
+      b = parseInt(p.color.slice(5,7), 16);
+    }
+    ctx.fillStyle = `rgba(${r},${g},${b},${pAlpha})`;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rotation + Math.sin(p.age * 5 + p.wobble) * 0.3);
+    ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+    ctx.restore();
+  });
+}
+
+// ── Update ──
+function update(dt) {
+  const clampedDt = Math.min(dt, 0.1); // cap delta time
+
+  if (state.phase === 'walking') {
+    if (state.playerX < state.playerTargetX) {
+      state.walkTime += clampedDt;
+      state.playerX += state.walkSpeed * clampedDt;
+      playFootstep();
+      if (state.playerX >= state.playerTargetX) {
+        state.playerX = state.playerTargetX;
+        state.walkTime = 0;
+        // Check what to trigger next
+        const nextNPC = state.currentNPC + 1;
+        if (nextNPC < npcs.length) {
+          // Trigger dialogue with this NPC
+          state.phase = 'dialogue';
+          state.currentNPC = nextNPC;
+          state.dialogueCharIndex = 0;
+          state.dialogueTimer = 0;
+        } else if (nextNPC === npcs.length && state.playerX >= CELEB_X) {
+          // Walk past all NPCs, go to celebration point
+          state.phase = 'celebration';
+          state.celebTime = 0;
+          // Initial cannon blasts from both sides
+          fireCannon('left');
+          fireCannon('right');
+          initAudio();
+          playHappyBirthday();
+        }
+      }
+    }
+  }
+
+  if (state.phase === 'dialogue') {
+    state.dialogueTimer += clampedDt;
+  }
+
+  if (state.phase === 'celebration') {
+    state.celebTime += clampedDt;
+    state.shakeIntensity = Math.min(1, state.celebTime / 3);
+
+    // Cannon blasts every ~2 seconds
+    if (state.celebTime < 8 && Math.floor(state.celebTime * 1000) % 2000 < 50) {
+      fireCannon(Math.random() < 0.5 ? 'left' : 'right');
+    }
+    // Light spray from bottom sides
+    if (state.celebTime < 10 && Math.random() < 0.25) {
+      const side = Math.random() < 0.5 ? 'left' : 'right';
+      const px = side === 'left' ? W * 0.02 : W * 0.98;
+      spawnParticles(px, H, 3);
+    }
+
+    if (state.celebTime > 16) {
+      state.phase = 'end';
+    }
+  }
+
+  // Update particles
+  for (let i = state.particles.length - 1; i >= 0; i--) {
+    const p = state.particles[i];
+    p.age += clampedDt;
+    p.x += p.vx * clampedDt;
+    p.y += p.vy * clampedDt;
+    p.vy += 80 * clampedDt; // gravity
+    p.rotation += p.rotSpeed * clampedDt;
+    if (p.age >= p.life) {
+      state.particles.splice(i, 1);
+    }
+  }
+}
+
+// ── Render ──
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  if (state.phase === 'celebration' || state.phase === 'end') {
+    // Draw background behind celebration
+    drawBackground();
+
+    const celebAlpha = state.phase === 'end' ? 1 : Math.min(1, state.celebTime / 2.5);
+    drawCelebration(celebAlpha);
+
+    return;
+  }
+
+  drawBackground();
+
+  // Warm ambient light overlay
+  const lightGrad = ctx.createLinearGradient(0, 0, 0, H);
+  lightGrad.addColorStop(0, 'rgba(255,240,210,0.10)');
+  lightGrad.addColorStop(0.5, 'rgba(255,240,210,0.04)');
+  lightGrad.addColorStop(1, 'rgba(255,240,210,0)');
+  ctx.fillStyle = lightGrad;
+  ctx.fillRect(0, 0, W, H);
+
+
+  const gy = getGroundY();
+
+  // Draw school gate (behind player and NPCs)
+  if (images.gate && images.gate.complete) {
+    const gateScreenX = worldToScreen(180);
+    const gateScale = 0.55;
+    const gateW = images.gate.naturalWidth * gateScale;
+    const gateH = images.gate.naturalHeight * gateScale;
+    const gateY = gy - gateH - 45;
+    if (gateScreenX > -gateW && gateScreenX < W + gateW) {
+      ctx.drawImage(images.gate, gateScreenX, gateY, gateW, gateH);
+    }
+  }
+
+  // Draw NPCs
+  npcs.forEach((npc, i) => {
+    if (i > state.currentNPC + 1) return; // don't show NPCs too far ahead
+    // Fade-out for NPC that just finished dialogue
+    let alpha = 1;
+    if (i === state.fadeOutNPC) {
+      const elapsed = performance.now() / 1000 - state.fadeOutStart;
+      alpha = Math.max(0, 1 - elapsed / 0.6);
+      if (alpha <= 0) return;
+    }
+    const sx = worldToScreen(npc.x);
+    if (sx > -100 && sx < W + 100) {
+      ctx.globalAlpha = alpha;
+      drawNPCCharacter(sx, gy - 10, npc, performance.now() / 1000 + i,
+        state.phase === 'dialogue' && state.currentNPC === i, state.dialogueTimer);
+      ctx.globalAlpha = 1;
+    }
+  });
+
+  // Draw player
+  const playerScreenX = W * 0.35;
+  const playerScreenY = gy - 40;
+  const isWalking = state.phase === 'walking' && state.playerX < state.playerTargetX;
+  const playerMode = state.phase === 'dialogue' ? 'chat' : (isWalking ? 'walk' : 'idle');
+  drawPlayer(playerScreenX, playerScreenY, playerMode);
+
+
+  // Dialogue overlay
+  if (state.phase === 'dialogue' && state.currentNPC >= 0) {
+    drawDialogueBox(npcs[state.currentNPC]);
+  }
+
+  // Intro hint
+  if (state.phase === 'intro') {
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 20px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('画面をタップして', W / 2, H / 2 - 10);
+    ctx.fillText('先生を歩かせてください ▸', W / 2, H / 2 + 20);
+  }
+}
+
+// ── Game loop ──
+let lastTime = 0;
+function gameLoop(time) {
+  const dt = lastTime ? (time - lastTime) / 1000 : 0;
+  lastTime = time;
+  update(dt);
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+// ── Input handling ──
+function handleClick(e) {
+  e.preventDefault();
+  initAudio();
+
+  switch (state.phase) {
+    case 'intro':
+      state.phase = 'walking';
+      state.playerTargetX = npcs[0].x - 140;
+      startBGM();
+      startAmbient();
+      break;
+
+    case 'walking':
+      // Do nothing while walking (player will auto-stop at NPC)
+      break;
+
+    case 'dialogue':
+      // Dismiss dialogue, walk to next NPC
+      state.phase = 'walking';
+      state.fadeOutNPC = state.currentNPC;
+      state.fadeOutStart = performance.now() / 1000;
+      const nextIdx = state.currentNPC + 1;
+      if (nextIdx < npcs.length) {
+        state.playerTargetX = npcs[nextIdx].x - 140;
+      } else {
+        state.playerTargetX = CELEB_X;
+      }
+      break;
+
+    case 'celebration':
+      // Celebration in progress, ignore clicks
+      break;
+
+    case 'end':
+      // Restart
+      state.phase = 'intro';
+      state.playerX = 80;
+      state.playerTargetX = 80;
+      state.currentNPC = -1;
+      state.walkTime = 0;
+      state.celebTime = 0;
+      state.particles = [];
+      state.shakeIntensity = 0;
+      break;
+  }
+}
+
+canvas.addEventListener('click', handleClick);
+canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleClick(e); }, { passive: false });
+
+// ── Keyboard support ──
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Enter') {
+    e.preventDefault();
+    handleClick(e);
+  }
+});
+
+// ── Start ──
+requestAnimationFrame(gameLoop);
+
+// Hide hint when not in intro/walking
+const hintEl = document.getElementById('hint');
+const origRender = render;
+// Simple observer — check state in loop
+setInterval(() => {
+  hintEl.style.display = (state.phase === 'intro' || state.phase === 'walking') ? 'block' : 'none';
+}, 500);
+</script>
+</body>
+</html>
