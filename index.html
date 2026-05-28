@@ -59,6 +59,14 @@ images.gate.src = 'gate.png';
 images.cake = new Image();
 images.cake.src = 'cake.png';
 
+// Video for celebration
+const videoEl = document.createElement('video');
+videoEl.src = 'end.mp4';
+videoEl.loop = false;
+videoEl.muted = false;
+videoEl.playsInline = true;
+videoEl.preload = 'auto';
+
 // Final scene character images
 images.lastZhu = new Image(); images.lastZhu.src = 'zhu_last.png';
 images.lastZhou = new Image(); images.lastZhou.src = 'zhou_last.png';
@@ -213,7 +221,7 @@ const WORLD_W = 5200;
 const GROUND_Y_RATIO = 0.75; // ground line at 75% of height
 
 const state = {
-  phase: 'intro',       // intro | walking | dialogue | celebration | end
+  phase: 'intro',       // intro | walking | dialogue | celebration | video | end
   playerX: 80,
   playerTargetX: 80,
   walkSpeed: 220,       // px per second
@@ -664,6 +672,16 @@ function drawStar(cx, cy, innerR, outerR, points) {
   ctx.fill();
 }
 
+function drawVideo(W, H) {
+  if (!videoEl.videoWidth) return;
+  const scale = Math.min(W / videoEl.videoWidth, H / videoEl.videoHeight);
+  const vw = videoEl.videoWidth * scale;
+  const vh = videoEl.videoHeight * scale;
+  const vx = (W - vw) / 2;
+  const vy = (H - vh) / 2;
+  ctx.drawImage(videoEl, vx, vy, vw, vh);
+}
+
 function bounceEase(t) {
   if (t <= 0) return 0;
   if (t >= 1) return 1;
@@ -782,11 +800,11 @@ function update(dt) {
           state.dialogueTimer = 0;
         } else if (nextNPC === npcs.length && state.playerX >= CELEB_X) {
           // Walk past all NPCs, go to celebration point
-          state.phase = 'celebration';
+          state.phase = 'video';
           state.celebTime = 0;
-          // Initial cannon blasts from both sides
-          fireCannon('left');
-          fireCannon('right');
+          stopBGM();
+          videoEl.currentTime = 0;
+          videoEl.play().catch(() => {});
           initAudio();
           playHappyBirthday();
         }
@@ -796,6 +814,19 @@ function update(dt) {
 
   if (state.phase === 'dialogue') {
     state.dialogueTimer += clampedDt;
+  }
+
+  if (state.phase === 'video') {
+    state.celebTime += clampedDt;
+    // After SURPRISE + video (~8s), go to celebration
+    if (state.celebTime > 8) {
+      state.phase = 'celebration';
+      state.celebTime = 0;
+      stopBGM();
+      playHappyBirthday();
+      fireCannon('left');
+      fireCannon('right');
+    }
   }
 
   if (state.phase === 'celebration') {
@@ -836,13 +867,41 @@ function update(dt) {
 function render() {
   ctx.clearRect(0, 0, W, H);
 
+  if (state.phase === 'video') {
+    // Darken
+    const darkAlpha = Math.min(1, state.celebTime / 0.8);
+    ctx.fillStyle = `rgba(0,0,0,${darkAlpha * 0.85})`;
+    ctx.fillRect(0, 0, W, H);
+
+    // "SURPRISE!" text
+    if (state.celebTime > 0.5 && state.celebTime < 3) {
+      const t = state.celebTime < 1 ? (state.celebTime - 0.5) / 0.5 :
+                state.celebTime > 2.5 ? (3 - state.celebTime) / 0.5 : 1;
+      ctx.font = `bold ${60 * (0.5 + t * 0.5)}px serif`;
+      ctx.fillStyle = `rgba(255,255,255,${t})`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('SURPRISE!', W / 2, H / 2 - 30);
+      ctx.font = '16px serif';
+      ctx.fillText('先生のために特別なビデオを用意しました', W / 2, H / 2 + 20);
+    }
+
+    // Video playback
+    if (state.celebTime > 2.5 && state.celebTime < 8) {
+      const vidAlpha = Math.min(1, (state.celebTime - 2.5) / 0.5);
+      ctx.globalAlpha = vidAlpha;
+      drawVideo(W, H);
+      ctx.globalAlpha = 1;
+    }
+    return;
+  }
+
   if (state.phase === 'celebration' || state.phase === 'end') {
     // Draw background behind celebration
     drawBackground();
 
     const celebAlpha = state.phase === 'end' ? 1 : Math.min(1, state.celebTime / 2.5);
     drawCelebration(celebAlpha);
-
     return;
   }
 
