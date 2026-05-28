@@ -845,6 +845,7 @@ function update(dt) {
     if (state.celebTime > 11) {
       state.phase = 'end';
       videoEl.pause();
+      videoEl.currentTime = 0;
     }
   }
 
