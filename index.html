@@ -197,23 +197,45 @@ function playFootstep() {
 
 function playHappyBirthday() {
   if (!audioCtx) return;
-  stopBGM();
   const now = audioCtx.currentTime;
-  // Melody — brighter square wave
   const melody = [
     [392,0],[392,0.45],[440,0.9],[392,1.35],[523,1.8],[494,2.25],
     [392,2.7],[392,3.15],[440,3.6],[392,4.05],[587,4.5],[523,4.95],
     [392,5.4],[392,5.85],[784,6.3],[659,6.75],[523,7.2],[494,7.65],[440,8.1],
     [698,9.0],[698,9.45],[659,9.9],[523,10.35],[587,10.8],[523,11.25],
   ];
-  melody.forEach(([freq, offset]) => playNote(freq, now + offset, 0.4, 0.2, 'square'));
-  // Bass harmony
+  melody.forEach(([freq, offset]) => playNote(freq, now + offset, 0.45, 0.22, 'square'));
   const bass = [
     [196,0],[196,0.9],[196,1.8],[196,2.7],
     [196,3.6],[196,4.5],[196,5.4],[262,6.3],[220,7.2],
     [175,9.0],[175,9.9],[262,10.35],[262,10.8],[196,11.25],
   ];
-  bass.forEach(([freq, offset]) => playNote(freq, now + offset, 0.7, 0.1, 'triangle'));
+  bass.forEach(([freq, offset]) => playNote(freq, now + offset, 0.75, 0.12, 'triangle'));
+}
+
+function playSurpriseJingle() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  // Quick ascending fanfare
+  [[523,0,0.1],[659,0.08,0.1],[784,0.16,0.1],[1047,0.24,0.4]].forEach(([f, s, d]) => {
+    playNote(f, now + s, d, 0.25, 'square');
+    playNote(f / 2, now + s, d, 0.12, 'triangle');
+  });
+}
+
+function playEndingBGM() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const vol = 0.12;
+  const melody = [
+    [523,0,1.2],[659,1.5,0.8],[784,2.5,1.5],
+    [659,4.5,1.0],[523,5.8,1.5],[440,7.8,1.5],
+    [523,9.5,2.5],
+  ];
+  melody.forEach(([freq, start, dur]) => {
+    playNote(freq, now + start, dur, vol, 'sine');
+    playNote(freq / 2, now + start, dur, vol * 0.5, 'sine');
+  });
 }
 
 // ── Game state ──
@@ -800,13 +822,11 @@ function update(dt) {
           state.dialogueTimer = 0;
         } else if (nextNPC === npcs.length && state.playerX >= CELEB_X) {
           // Walk past all NPCs, go to celebration point
-          state.phase = 'video';
+          state.phase = 'celebration';
           state.celebTime = 0;
-          stopBGM();
-          videoEl.currentTime = 0;
-          videoEl.play().catch(() => {});
-          initAudio();
           playHappyBirthday();
+          fireCannon('left');
+          fireCannon('right');
         }
       }
     }
@@ -818,14 +838,10 @@ function update(dt) {
 
   if (state.phase === 'video') {
     state.celebTime += clampedDt;
-    // After SURPRISE + video (~8s), go to celebration
-    if (state.celebTime > 8) {
-      state.phase = 'celebration';
-      state.celebTime = 0;
-      stopBGM();
-      playHappyBirthday();
-      fireCannon('left');
-      fireCannon('right');
+    // Video is ~10s, freeze at end
+    if (state.celebTime > 11) {
+      state.phase = 'end';
+      videoEl.pause();
     }
   }
 
@@ -844,8 +860,14 @@ function update(dt) {
       spawnParticles(px, H, 3);
     }
 
-    if (state.celebTime > 16) {
-      state.phase = 'end';
+    if (state.celebTime > 10) {
+      state.phase = 'video';
+      state.celebTime = 0;
+      stopBGM();
+      videoEl.currentTime = 0;
+      videoEl.play().catch(() => {});
+      playSurpriseJingle();
+      playEndingBGM();
     }
   }
 
@@ -877,13 +899,16 @@ function render() {
     if (state.celebTime > 0.5 && state.celebTime < 3) {
       const t = state.celebTime < 1 ? (state.celebTime - 0.5) / 0.5 :
                 state.celebTime > 2.5 ? (3 - state.celebTime) / 0.5 : 1;
+      const colors = ['#FFD700','#FF6B6B','#FFD93D','#FF69B4','#FF8C42','#FFB830'];
+      const ci = Math.floor(state.celebTime * 3) % colors.length;
       ctx.font = `bold ${60 * (0.5 + t * 0.5)}px serif`;
-      ctx.fillStyle = `rgba(255,255,255,${t})`;
+      ctx.fillStyle = colors[ci];
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('SURPRISE!', W / 2, H / 2 - 30);
-      ctx.font = '16px serif';
-      ctx.fillText('先生のために特別なビデオを用意しました', W / 2, H / 2 + 20);
+      ctx.shadowColor = 'rgba(255,200,100,0.6)';
+      ctx.shadowBlur = 20;
+      ctx.fillText('SURPRISE!', W / 2, H / 2);
+      ctx.shadowBlur = 0;
     }
 
     // Video playback
@@ -896,11 +921,23 @@ function render() {
     return;
   }
 
-  if (state.phase === 'celebration' || state.phase === 'end') {
-    // Draw background behind celebration
-    drawBackground();
+  if (state.phase === 'end') {
+    // Show frozen last frame of video
+    if (videoEl.videoWidth) {
+      drawVideo(W, H);
+    }
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('素敵な一日をお過ごしください', W / 2, H - 40);
+    return;
+  }
 
-    const celebAlpha = state.phase === 'end' ? 1 : Math.min(1, state.celebTime / 2.5);
+  if (state.phase === 'celebration') {
+    drawBackground();
+    const celebAlpha = Math.min(1, state.celebTime / 2.5);
     drawCelebration(celebAlpha);
     return;
   }
